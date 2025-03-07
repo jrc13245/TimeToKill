@@ -1,7 +1,7 @@
 ## Interface: 11200
 ## Title: TimeToKill
-## Notes: TimeToKill
-## Author: Torio
+## Notes: TimeToKill - cut down version of EliteWarriorCombat by jlabranche
+## Author: Hobbitt - TurtleWoW, Torio
 ## SavedVariables: TimeToKill
 TimeToKill.lua
 

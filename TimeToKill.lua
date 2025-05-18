@@ -1,126 +1,190 @@
 local lastCheckTime = 0;
 local checkInterval = 0.1;
+
 if not TimeToKill then
-	TimeToKill = {};
-end;
-TimeToKill.TTD = CreateFrame("Frame", nil, UIParent);
+    TimeToKill = {};
+end
+
+local defaultPosition = {
+    point = "BOTTOMLEFT",
+    relativeTo = "UIParent",
+    relativePoint = "BOTTOMLEFT",
+    x = math.floor(GetScreenWidth() * 0.465),
+    y = math.floor(GetScreenHeight() * 0.11)
+};
+
+TimeToKill.TTD = CreateFrame("Frame", "TimeToKillFrame", UIParent);
 
 local inCombat = false;
-
 local remainingSeconds = 0;
 
-local ttdFrame = CreateFrame("Frame")
-ttdFrame:SetFrameStrata("HIGH")
-ttdFrame:SetWidth(100)
-ttdFrame:SetHeight(50)
-ttdFrame:SetPoint("CENTER", UIParent, "CENTER")
-ttdFrame:SetPoint("BOTTOMLEFT", math.floor(GetScreenWidth()*.465), math.floor(GetScreenHeight()*.11));
-ttdFrame:Show()
-ttdFrame:SetMovable(true)
-ttdFrame:EnableMouse(true)
+local ttdFrame = TimeToKill.TTD;
+ttdFrame:SetFrameStrata("HIGH");
+ttdFrame:SetWidth(100);
+ttdFrame:SetHeight(50);
 
-local textTimeTillDeath = ttdFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-textTimeTillDeath:SetFont("Fonts\\FRIZQT__.TTF", 99, "OUTLINE, MONOCHROME")
-textTimeTillDeath:SetPoint("CENTER", 0, -20)
+local function ApplyFramePosition()
+    if TimeToKill.Position and TimeToKill.Position.point then
+        ttdFrame:SetPoint(
+            TimeToKill.Position.point,
+            TimeToKill.Position.relativeTo,
+            TimeToKill.Position.relativePoint,
+            TimeToKill.Position.x,
+            TimeToKill.Position.y
+        );
+    else
+        ttdFrame:SetPoint(
+            defaultPosition.point,
+            _G[defaultPosition.relativeTo],
+            defaultPosition.relativePoint,
+            defaultPosition.x,
+            defaultPosition.y
+        );
+        if not TimeToKill.Position then TimeToKill.Position = {} end
+        TimeToKill.Position.point = defaultPosition.point;
+        TimeToKill.Position.relativeTo = defaultPosition.relativeTo;
+        TimeToKill.Position.relativePoint = defaultPosition.relativePoint;
+        TimeToKill.Position.x = defaultPosition.x;
+        TimeToKill.Position.y = defaultPosition.y;
+    end
+end
 
-local textTimeTillDeathText = ttdFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-textTimeTillDeathText:SetFont("Fonts\\FRIZQT__.TTF", 13, "OUTLINE, MONOCHROME")
-textTimeTillDeathText:SetPoint("CENTER", 0, 0)
+ttdFrame:Show();
+ttdFrame:SetMovable(true);
+ttdFrame:EnableMouse(true);
+
+local textTimeTillDeath = ttdFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText");
+textTimeTillDeath:SetFont("Fonts\\FRIZQT__.TTF", 99, "OUTLINE, MONOCHROME");
+textTimeTillDeath:SetPoint("CENTER", 0, -20);
+
+local textTimeTillDeathText = ttdFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText");
+textTimeTillDeathText:SetFont("Fonts\\FRIZQT__.TTF", 13, "OUTLINE, MONOCHROME");
+textTimeTillDeathText:SetPoint("CENTER", 0, 0);
 
 ttdFrame:SetScript("OnMouseDown", function(self, button)
-	if IsShiftKeyDown() then
-		ttdFrame:StartMoving()
-	end
-end)
+    if IsShiftKeyDown() then
+        ttdFrame:StartMoving();
+    end
+end);
 
 ttdFrame:SetScript("OnMouseUp", function(self, button)
-		ttdFrame:StopMovingOrSizing()
-end)
+    ttdFrame:StopMovingOrSizing();
+    if not TimeToKill.Position then TimeToKill.Position = {} end
+    local point, relativeTo, relativePoint, x, y = ttdFrame:GetPoint();
+    TimeToKill.Position.point = point;
+    if type(relativeTo) == "table" and relativeTo.GetName then
+         TimeToKill.Position.relativeTo = relativeTo:GetName() or "UIParent";
+    elseif type(relativeTo) == "string" then
+         TimeToKill.Position.relativeTo = relativeTo;
+    else
+         TimeToKill.Position.relativeTo = "UIParent";
+    end
+    TimeToKill.Position.relativePoint = relativePoint;
+    TimeToKill.Position.x = x;
+    TimeToKill.Position.y = y;
+end);
 
 local timeSinceLastUpdate = 0;
 local combatStart = GetTime();
 
 local function TTD_Show()
-	if (inCombat) then
-		textTimeTillDeathText:SetText("Time Till Death:");
-	end
+    if (inCombat) then
+        textTimeTillDeathText:SetText("Time Till Death:");
+    end
 end
 
 local function TTD_Hide()
-	textTimeTillDeath:SetText("-.--");
+    textTimeTillDeath:SetText("-.--");
 end
 
 local function TTDLogic()
-	if UnitIsEnemy("player","target") or UnitReaction("player","target") == 4 then
-		local targetName = UnitName("target");
-		local EHealthPercent = UnitHealth("target")/UnitHealthMax("target")*100;
-		if EHealthPercent == 100 then
-			if targetName ~= 'Spore' and targetName ~= 'Fallout Slime' and targetName ~= 'Plagued Champion' then
-				combatStart = GetTime();
-			end
-		end;
-		if EHealthPercent then
-			local maxHP     = UnitHealthMax("target");
-			if targetName == 'Vaelastrasz the Corrupt' then
-				maxHP = UnitHealthMax("target")*0.3;
-			end;
-			local curHP     = UnitHealth("target");
-			local missingHP = maxHP - curHP;
-			local seconds   = timeSinceLastUpdate - combatStart;
-			remainingSeconds = (maxHP/(missingHP/seconds)-seconds)*0.90;
-			if (remainingSeconds ~= remainingSeconds) then
-				textTimeTillDeath:SetText("-.--")
-			else
-				if (remainingSeconds) then
-					textTimeTillDeath:SetText(string.format("%.2f",remainingSeconds));
-				end
-			end
-		end
-	end
+    if UnitIsEnemy("player","target") or UnitReaction("player","target") == 4 then
+        local targetName = UnitName("target");
+        local EHealthPercent = UnitHealth("target")/UnitHealthMax("target")*100;
+        if EHealthPercent == 100 then
+            if targetName ~= 'Spore' and targetName ~= 'Fallout Slime' and targetName ~= 'Plagued Champion' then
+                combatStart = GetTime();
+            end
+        end;
+        if EHealthPercent then
+            local maxHP     = UnitHealthMax("target");
+            if targetName == 'Vaelastrasz the Corrupt' then
+                maxHP = UnitHealthMax("target")*0.3;
+            end;
+            local curHP     = UnitHealth("target");
+            local missingHP = maxHP - curHP;
+            local seconds   = timeSinceLastUpdate - combatStart;
+            if seconds > 0 and missingHP > 0 then
+                remainingSeconds = (maxHP/(missingHP/seconds)-seconds)*0.90;
+                if (remainingSeconds ~= remainingSeconds) or remainingSeconds < 0 then
+                    textTimeTillDeath:SetText("-.--")
+                else
+                    textTimeTillDeath:SetText(string.format("%.2f",remainingSeconds));
+                end
+            else
+                 textTimeTillDeath:SetText("-.--");
+            end
+        end
+    else
+         -- Optionally hide or clear if no valid enemy target
+         -- TTD_Hide();
+    end
 end
 
 
 function onUpdate(sinceLastUpdate)
-	timeSinceLastUpdate = GetTime();
+    timeSinceLastUpdate = GetTime();
 
-	if GetTime()-lastCheckTime >= checkInterval then
-		if (lastCheckTime == 0) then
-			lastCheckTime = GetTime();
-		end
-		
-		TTDLogic();
+    if GetTime()-lastCheckTime >= checkInterval then
+        if (lastCheckTime == 0) then
+            lastCheckTime = GetTime();
+        end
+        
+        TTDLogic();
 
-
-		lastCheckTime = 0 
-	end
+        lastCheckTime = GetTime();
+    end
 end
 TimeToKill.TTD:SetScript("OnUpdate", function(self) if inCombat then onUpdate(timeSinceLastUpdate); end; end);
 
 
 TimeToKill.TTD:SetScript("OnShow", function(self)
-	timeSinceLastUpdate = 0
-end)
-
+    timeSinceLastUpdate = 0;
+end);
 
 TimeToKill.TTD:SetScript("OnEvent", function()
-	if event == "PLAYER_REGEN_DISABLED" then
-		combatStart = GetTime();
-		inCombat = true;
-		TTD_Show();
-	elseif event == "PLAYER_REGEN_ENABLED" then
-		inCombat = false;
-		combatStart = GetTime();
-		TTD_Hide();
-		textTimeTillDeathText:SetText("");
-	elseif event == "PLAYER_LOGIN" then
-		TTD_Hide();
-	elseif event == "PLAYER_DEAD" then
-		inCombat = false;
-		TTD_Hide();
-	end
+    if event == "PLAYER_LOGIN" then
+        if TimeToKill.Position == nil then
+            TimeToKill.Position = {};
+        end
+        ApplyFramePosition(); 
+        TTD_Hide();
+    elseif event == "ADDON_LOADED" then
+        if arg1 == "TimeToKill" then
+            if TimeToKill.Position == nil then
+                 TimeToKill.Position = {};
+            end
+            ApplyFramePosition();
+        end
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        combatStart = GetTime();
+        inCombat = true;
+        TTD_Show();
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        inCombat = false;
+        combatStart = GetTime();
+        TTD_Hide();
+        textTimeTillDeathText:SetText("");
+    elseif event == "PLAYER_DEAD" then
+        inCombat = false;
+        TTD_Hide();
+    end
 end);
+
+TimeToKill.TTD:RegisterEvent("PLAYER_LOGIN");
+TimeToKill.TTD:RegisterEvent("ADDON_LOADED");
 TimeToKill.TTD:RegisterEvent("PLAYER_REGEN_ENABLED");
 TimeToKill.TTD:RegisterEvent("PLAYER_REGEN_DISABLED");
-TimeToKill.TTD:RegisterEvent("PLAYER_LOGIN");
 TimeToKill.TTD:RegisterEvent("PLAYER_DEAD");
 
+ApplyFramePosition()

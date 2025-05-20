@@ -17,7 +17,7 @@ TimeToKill.TTD = CreateFrame("Frame", "TimeToKillFrame", UIParent);
 
 local inCombat = false;
 local remainingSeconds = 0;
-local isMoving = false; -- Flag to indicate if the frame is being moved
+local isMoving = false;
 
 local ttdFrame = TimeToKill.TTD;
 ttdFrame:SetFrameStrata("HIGH");
@@ -25,51 +25,65 @@ ttdFrame:SetWidth(100);
 ttdFrame:SetHeight(50);
 
 local function ApplyFramePosition()
-    local position = TimeToKill.Position;
-    local effectiveRelativeTo = nil; -- Variable to hold the actual frame object
+    if not TimeToKill.Position then
+        TimeToKill.Position = {};
+    end
 
-    -- First, try to use the saved position if it exists
-    if position and position.point and position.relativeTo then
-        -- Check if the saved relative frame exists in the global environment
-        if type(position.relativeTo) == "string" and _G[position.relativeTo] then
-            effectiveRelativeTo = _G[position.relativeTo];
+    local positionDetails = TimeToKill.Position;
+    local effectiveRelativeTo = nil;
+    local currentPositionConfig = {};
+
+    if positionDetails.point and positionDetails.relativeTo and type(positionDetails.relativeTo) == "string" then
+        local foundGlobalFrame = getglobal(positionDetails.relativeTo);
+        if foundGlobalFrame and type(foundGlobalFrame) == "table" and foundGlobalFrame.SetPoint then
+            effectiveRelativeTo = foundGlobalFrame;
+            currentPositionConfig.point = positionDetails.point;
+            currentPositionConfig.relativeTo = positionDetails.relativeTo;
+            currentPositionConfig.relativePoint = positionDetails.relativePoint;
+            currentPositionConfig.x = positionDetails.x;
+            currentPositionConfig.y = positionDetails.y;
         end
     end
 
-    -- If saved position is invalid or relative frame doesn't exist, use default
     if not effectiveRelativeTo then
-        effectiveRelativeTo = _G[defaultPosition.relativeTo];
-        position = defaultPosition; -- Use default position details
-        -- Ensure TimeToKill.Position is initialized if it wasn't
-        if not TimeToKill.Position then TimeToKill.Position = {} end
-        -- Update TimeToKill.Position with default values for saving later
-        TimeToKill.Position.point = defaultPosition.point;
-        TimeToKill.Position.relativeTo = defaultPosition.relativeTo;
-        TimeToKill.Position.relativePoint = defaultPosition.relativePoint;
-        TimeToKill.Position.x = defaultPosition.x;
-        TimeToKill.Position.y = defaultPosition.y;
+        effectiveRelativeTo = getglobal(defaultPosition.relativeTo);
+        
+        if not (effectiveRelativeTo and type(effectiveRelativeTo) == "table" and effectiveRelativeTo.SetPoint) then
+            effectiveRelativeTo = UIParent;
+            
+            currentPositionConfig.point = "CENTER";
+            currentPositionConfig.relativeTo = "UIParent";
+            currentPositionConfig.relativePoint = "CENTER";
+            currentPositionConfig.x = 0;
+            currentPositionConfig.y = 0;
+        else
+            currentPositionConfig.point = defaultPosition.point;
+            currentPositionConfig.relativeTo = defaultPosition.relativeTo;
+            currentPositionConfig.relativePoint = defaultPosition.relativePoint;
+            currentPositionConfig.x = defaultPosition.x;
+            currentPositionConfig.y = defaultPosition.y;
+        end
+        
+        TimeToKill.Position.point = currentPositionConfig.point;
+        TimeToKill.Position.relativeTo = currentPositionConfig.relativeTo; 
+        TimeToKill.Position.relativePoint = currentPositionConfig.relativePoint;
+        TimeToKill.Position.x = currentPositionConfig.x;
+        TimeToKill.Position.y = currentPositionConfig.y;
     end
 
-    -- Apply the position using the determined effectiveRelativeTo frame
-    if effectiveRelativeTo then
+    if effectiveRelativeTo and type(effectiveRelativeTo) == "table" and effectiveRelativeTo.SetPoint then
+        ttdFrame:ClearAllPoints();
         ttdFrame:SetPoint(
-            position.point,
+            currentPositionConfig.point,
             effectiveRelativeTo,
-            position.relativePoint,
-            position.x,
-            position.y
+            currentPositionConfig.relativePoint,
+            currentPositionConfig.x,
+            currentPositionConfig.y
         );
     else
-        -- Fallback if even the default relative frame doesn't exist (shouldn't happen with UIParent)
-        ttdFrame:SetPoint(
-            "CENTER", -- Fallback to center if all else fails
-            UIParent,
-            "CENTER",
-            0,
-            0
-        );
-         -- Also update saved position to this fallback
-        if not TimeToKill.Position then TimeToKill.Position = {} end
+        ttdFrame:ClearAllPoints();
+        ttdFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0);
+        
         TimeToKill.Position.point = "CENTER";
         TimeToKill.Position.relativeTo = "UIParent";
         TimeToKill.Position.relativePoint = "CENTER";
@@ -91,44 +105,69 @@ local textTimeTillDeathText = ttdFrame:CreateFontString(nil, "OVERLAY", "GameToo
 textTimeTillDeathText:SetFont("Fonts\\FRIZQT__.TTF", 13, "OUTLINE, MONOCHROME");
 textTimeTillDeathText:SetPoint("CENTER", 0, 0);
 
-ttdFrame:SetScript("OnMouseDown", function(self, button)
+ttdFrame:SetScript("OnMouseDown", function(_, button)
+    if not ttdFrame or not ttdFrame.StartMoving then
+        isMoving = false;
+        return;
+    end
+
     if IsShiftKeyDown() then
-        isMoving = true; -- Set the flag when moving starts
-        ttdFrame:StartMoving();
+        isMoving = true;
+        
+        local success, err = pcall(ttdFrame.StartMoving, ttdFrame);
+        if not success then
+            isMoving = false;
+        end
     end
 end);
 
-ttdFrame:SetScript("OnMouseUp", function(self, button)
-    ttdFrame:StopMovingOrSizing();
-    isMoving = false; -- Clear the flag when moving stops
-
-    if not TimeToKill.Position then TimeToKill.Position = {} end
-    local point, relativeTo, relativePoint, x, y = ttdFrame:GetPoint();
-
-    TimeToKill.Position.point = point;
-
-    -- Ensure relativeTo is saved as a string name
-    if type(relativeTo) == "table" and relativeTo.GetName then
-         TimeToKill.Position.relativeTo = relativeTo:GetName();
-         -- If GetName returns nil or empty, fallback to UIParent
-         if not TimeToKill.Position.relativeTo or TimeToKill.Position.relativeTo == "" then
-             TimeToKill.Position.relativeTo = "UIParent";
-         end
-    elseif type(relativeTo) == "string" then
-         TimeToKill.Position.relativeTo = relativeTo;
-          -- If the string is nil or empty, fallback to UIParent
-         if not TimeToKill.Position.relativeTo or TimeToKill.Position.relativeTo == "" then
-             TimeToKill.Position.relativeTo = "UIParent";
-         end
-    else
-         -- If relativeTo is neither table nor string, fallback to UIParent
-         TimeToKill.Position.relativeTo = "UIParent";
+ttdFrame:SetScript("OnMouseUp", function(_, button)
+    if not ttdFrame then
+        isMoving = false;
+        return;
     end
 
-    TimeToKill.Position.relativePoint = relativePoint;
-    TimeToKill.Position.x = x;
-    TimeToKill.Position.y = y;
+    if not ttdFrame.StopMovingOrSizing or not ttdFrame.GetLeft or not ttdFrame.GetBottom or not ttdFrame.GetName then
+        isMoving = false;
+        return;
+    end
+
+    local stopSuccess, stopError = pcall(ttdFrame.StopMovingOrSizing, ttdFrame);
+
+    if not stopSuccess then
+        isMoving = false; 
+        return; 
+    end
+    
+    isMoving = false; 
+
+    if not TimeToKill then 
+        return; 
+    end
+    if not TimeToKill.Position then
+        TimeToKill.Position = {};
+    end
+
+    local screenX, screenY
+    local getLeftSuccess, getLeftVal = pcall(ttdFrame.GetLeft, ttdFrame);
+    if not getLeftSuccess then 
+        return;
+    end
+    screenX = getLeftVal;
+
+    local getBottomSuccess, getBottomVal = pcall(ttdFrame.GetBottom, ttdFrame);
+    if not getBottomSuccess then
+        return;
+    end
+    screenY = getBottomVal;
+    
+    TimeToKill.Position.point = "BOTTOMLEFT";
+    TimeToKill.Position.relativeTo = "UIParent";
+    TimeToKill.Position.relativePoint = "BOTTOMLEFT";
+    TimeToKill.Position.x = screenX;
+    TimeToKill.Position.y = screenY;
 end);
+
 
 local timeSinceLastUpdate = 0;
 local combatStart = GetTime();
@@ -144,42 +183,54 @@ local function TTD_Hide()
 end
 
 local function TTDLogic()
-    if UnitIsEnemy("player","target") or UnitReaction("player","target") == 4 then
+    if UnitIsEnemy("player", "target") or UnitReaction("player", "target") == 4 then
         local targetName = UnitName("target");
-        local EHealthPercent = UnitHealth("target")/UnitHealthMax("target")*100;
-        if EHealthPercent == 100 then
-            if targetName ~= 'Spore' and targetName ~= 'Fallout Slime' and targetName ~= 'Plagued Champion' then
-                combatStart = GetTime();
+        local currentHP_target = UnitHealth("target");
+        local maxHP_target = UnitHealthMax("target");
+
+        if maxHP_target and maxHP_target > 0 then
+            local EHealthPercent = (currentHP_target / maxHP_target) * 100;
+
+            if EHealthPercent == 100 then
+                if targetName and targetName ~= 'Spore' and targetName ~= 'Fallout Slime' and targetName ~= 'Plagued Champion' then
+                    combatStart = GetTime();
+                end
             end
-        end;
-        if EHealthPercent then
-            local maxHP     = UnitHealthMax("target");
-            if targetName == 'Vaelastrasz the Corrupt' then
-                maxHP = UnitHealthMax("target")*0.3;
-            end;
-            local curHP     = UnitHealth("target");
-            local missingHP = maxHP - curHP;
-            local seconds   = timeSinceLastUpdate - combatStart;
-            if seconds > 0 and missingHP > 0 then
-                remainingSeconds = (maxHP/(missingHP/seconds)-seconds)*0.90;
-                if (remainingSeconds ~= remainingSeconds) or remainingSeconds < 0 then
-                    textTimeTillDeath:SetText("-.--")
+            
+            local effectiveMaxHP = maxHP_target;
+            if targetName and targetName == 'Vaelastrasz the Corrupt' then
+                effectiveMaxHP = maxHP_target * 0.3;
+            end
+            
+            local missingHP = effectiveMaxHP - currentHP_target;
+            local secondsInCombatSegment = timeSinceLastUpdate - combatStart;
+
+            if secondsInCombatSegment > 0 and missingHP > 0 then
+                local currentDPS = missingHP / secondsInCombatSegment;
+                if currentDPS > 0 then
+                    local estimatedTotalFightSeconds = effectiveMaxHP / currentDPS;
+                    remainingSeconds = (estimatedTotalFightSeconds - secondsInCombatSegment) * 0.90;
+                
+                    if (remainingSeconds ~= remainingSeconds) or remainingSeconds < 0 then 
+                        textTimeTillDeath:SetText("-.--");
+                    else
+                        textTimeTillDeath:SetText(string.format("%.2f", remainingSeconds));
+                    end
                 else
-                    textTimeTillDeath:SetText(string.format("%.2f",remainingSeconds));
+                    textTimeTillDeath:SetText("-.--");
                 end
             else
-                 textTimeTillDeath:SetText("-.--");
+                textTimeTillDeath:SetText("-.--");
             end
+        else
+            textTimeTillDeath:SetText("-.--");
         end
     else
-         -- Optionally hide or clear if no valid enemy target
-         -- TTD_Hide();
+        textTimeTillDeath:SetText("-.--"); 
     end
 end
 
-
 function onUpdate(sinceLastUpdate)
-    -- Only run the update logic if the frame is NOT being moved
     if not isMoving then
         timeSinceLastUpdate = GetTime();
 
@@ -203,12 +254,10 @@ end);
 
 TimeToKill.TTD:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
-        -- TimeToKill.Position is initialized in ApplyFramePosition if needed
         ApplyFramePosition();
         TTD_Hide();
     elseif event == "ADDON_LOADED" then
         if arg1 == "TimeToKill" then
-             -- TimeToKill.Position is initialized in ApplyFramePosition if needed
             ApplyFramePosition();
         end
     elseif event == "PLAYER_REGEN_DISABLED" then
@@ -232,5 +281,4 @@ TimeToKill.TTD:RegisterEvent("PLAYER_REGEN_ENABLED");
 TimeToKill.TTD:RegisterEvent("PLAYER_REGEN_DISABLED");
 TimeToKill.TTD:RegisterEvent("PLAYER_DEAD");
 
--- Initial position application
 ApplyFramePosition()

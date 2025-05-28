@@ -4,6 +4,8 @@ TimeToKill - cut down version of EliteWarriorCombat by jlabranche, made more sta
  /ttk
  
  /ttk name on|off
+
+ /ttk combathide on|off
  
  /ttk unlock|lock
  

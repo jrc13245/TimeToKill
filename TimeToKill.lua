@@ -5,13 +5,12 @@ if not TimeToKill then
     TimeToKill = {};
 end
 
--- Initialize TimeToKill.Settings for new saved variables
--- This will be properly initialized in ADDON_LOADED to ensure it's part of the saved table
 if not TimeToKill.Settings then
     TimeToKill.Settings = {};
-    -- Default values, will be overwritten by saved values if they exist
-    TimeToKill.Settings.isLocked = false; 
+
+    TimeToKill.Settings.isLocked = false;
     TimeToKill.Settings.isNameVisible = true;
+    TimeToKill.Settings.combatHide = false;
 end
 
 local defaultPosition = {
@@ -41,21 +40,34 @@ local textTimeTillDeathText = ttdFrame:CreateFontString(nil, "OVERLAY", "GameToo
 textTimeTillDeathText:SetFont("Fonts\\FRIZQT__.TTF", 13, "OUTLINE, MONOCHROME");
 textTimeTillDeathText:SetPoint("CENTER", 0, 0);
 
--- NEW: Function to apply the lock state
+
 local function ApplyLockState()
     if TimeToKill.Settings.isLocked then
-        ttdFrame:EnableMouse(false); -- Makes frame click-through and non-interactive for movement
+        ttdFrame:EnableMouse(false);
     else
-        ttdFrame:EnableMouse(true);  -- Makes frame interactive for movement
+        ttdFrame:EnableMouse(true);
     end
 end
 
--- NEW: Function to update the visibility of the "Time Till Death:" name text
+
 local function UpdateNameVisibility()
     if TimeToKill.Settings.isNameVisible then
         textTimeTillDeathText:Show();
     else
         textTimeTillDeathText:Hide();
+    end
+end
+
+
+local function ApplyCombatHideState()
+    if TimeToKill.Settings.combatHide then
+        if inCombat then
+            ttdFrame:Show();
+        else
+            ttdFrame:Hide();
+        end
+    else
+        ttdFrame:Show();
     end
 end
 
@@ -100,7 +112,7 @@ local function ApplyFramePosition()
         end
         
         TimeToKill.Position.point = currentPositionConfig.point;
-        TimeToKill.Position.relativeTo = currentPositionConfig.relativeTo; 
+        TimeToKill.Position.relativeTo = currentPositionConfig.relativeTo;
         TimeToKill.Position.relativePoint = currentPositionConfig.relativePoint;
         TimeToKill.Position.x = currentPositionConfig.x;
         TimeToKill.Position.y = currentPositionConfig.y;
@@ -130,17 +142,13 @@ end
 
 ttdFrame:Show();
 ttdFrame:SetMovable(true);
--- ttdFrame:EnableMouse(true); -- This will be managed by ApplyLockState based on saved settings
+
 
 ttdFrame:SetScript("OnMouseDown", function(_, button)
-    -- If EnableMouse(false) is set (i.e., frame is locked), this script won't be triggered for drag attempts.
     if not ttdFrame or not ttdFrame.StartMoving then
         isMoving = false;
         return;
     end
-
-    -- No need to check TimeToKill.Settings.isLocked here, as EnableMouse(false) prevents this event
-    -- from leading to a drag when locked.
 
     if IsShiftKeyDown() then
         isMoving = true;
@@ -166,14 +174,14 @@ ttdFrame:SetScript("OnMouseUp", function(_, button)
     local stopSuccess, stopError = pcall(ttdFrame.StopMovingOrSizing, ttdFrame);
 
     if not stopSuccess then
-        isMoving = false; 
-        return; 
+        isMoving = false;
+        return;
     end
     
-    isMoving = false; 
+    isMoving = false;
 
-    if not TimeToKill then 
-        return; 
+    if not TimeToKill then
+        return;
     end
     if not TimeToKill.Position then
         TimeToKill.Position = {};
@@ -181,7 +189,7 @@ ttdFrame:SetScript("OnMouseUp", function(_, button)
 
     local screenX, screenY
     local getLeftSuccess, getLeftVal = pcall(ttdFrame.GetLeft, ttdFrame);
-    if not getLeftSuccess then 
+    if not getLeftSuccess then
         return;
     end
     screenX = getLeftVal;
@@ -205,19 +213,16 @@ local combatStart = GetTime();
 
 local function TTD_Show()
     if (inCombat) then
-        -- The visibility of textTimeTillDeathText is handled by UpdateNameVisibility()
-        -- This function just ensures the text content is correct.
-        if TimeToKill.Settings.isNameVisible then 
+        if TimeToKill.Settings.isNameVisible then
              textTimeTillDeathText:SetText("Time Till Death:");
         else
-             textTimeTillDeathText:SetText(""); -- Or ensure it's empty if hidden by preference
+             textTimeTillDeathText:SetText("");
         end
     end
 end
 
 local function TTD_Hide()
     textTimeTillDeath:SetText("-.--");
-    -- textTimeTillDeathText will be managed by UpdateNameVisibility and combat events
 end
 
 local function TTDLogic()
@@ -249,7 +254,7 @@ local function TTDLogic()
                     local estimatedTotalFightSeconds = effectiveMaxHP / currentDPS;
                     remainingSeconds = (estimatedTotalFightSeconds - secondsInCombatSegment) * 0.90;
                 
-                    if (remainingSeconds ~= remainingSeconds) or remainingSeconds < 0 then 
+                    if (remainingSeconds ~= remainingSeconds) or remainingSeconds < 0 then
                         textTimeTillDeath:SetText("-.--");
                     else
                         textTimeTillDeath:SetText(string.format("%.2f", remainingSeconds));
@@ -264,7 +269,7 @@ local function TTDLogic()
             textTimeTillDeath:SetText("-.--");
         end
     else
-        textTimeTillDeath:SetText("-.--"); 
+        textTimeTillDeath:SetText("-.--");
     end
 end
 
@@ -292,48 +297,55 @@ end);
 
 TimeToKill.TTD:SetScript("OnEvent", function()
     if event == "PLAYER_LOGIN" then
-        -- Ensure settings are loaded/initialized (ADDON_LOADED should handle primary init)
         if not TimeToKill.Settings then TimeToKill.Settings = {} end
         if TimeToKill.Settings.isLocked == nil then TimeToKill.Settings.isLocked = false; end
         if TimeToKill.Settings.isNameVisible == nil then TimeToKill.Settings.isNameVisible = true; end
+        if TimeToKill.Settings.combatHide == nil then TimeToKill.Settings.combatHide = false; end
 
         ApplyFramePosition();
         ApplyLockState();
         UpdateNameVisibility();
-        TTD_Hide();
+        ApplyCombatHideState();
+        if not inCombat then
+            TTD_Hide();
+        end
     elseif event == "ADDON_LOADED" then
         if arg1 == "TimeToKill" then
-            -- Initialize TimeToKill.Settings if it doesn't exist (e.g., first run)
-            -- This ensures it's part of the TimeToKill table saved by SavedVariables
             if TimeToKill.Settings == nil then
                 TimeToKill.Settings = {};
             end
-            -- Set defaults for new settings if they are not already saved
             if TimeToKill.Settings.isLocked == nil then
-                TimeToKill.Settings.isLocked = false; -- Default to unlocked
+                TimeToKill.Settings.isLocked = false;
             end
             if TimeToKill.Settings.isNameVisible == nil then
-                TimeToKill.Settings.isNameVisible = true; -- Default to name visible
+                TimeToKill.Settings.isNameVisible = true;
+            end
+            if TimeToKill.Settings.combatHide == nil then
+                TimeToKill.Settings.combatHide = false;
             end
 
-            ApplyFramePosition();   -- Existing
-            ApplyLockState();       -- New: Apply loaded/default lock state
-            UpdateNameVisibility(); -- New: Apply loaded/default name visibility
+            ApplyFramePosition();
+            ApplyLockState();
+            UpdateNameVisibility();
+            ApplyCombatHideState();
         end
-    elseif event == "PLAYER_REGEN_DISABLED" then -- Player enters combat
+    elseif event == "PLAYER_REGEN_DISABLED" then
         combatStart = GetTime();
         inCombat = true;
+        ApplyCombatHideState();
         TTD_Show();
-        UpdateNameVisibility(); -- Ensure name visibility is correct when showing
-    elseif event == "PLAYER_REGEN_ENABLED" then -- Player leaves combat
+        UpdateNameVisibility();
+    elseif event == "PLAYER_REGEN_ENABLED" then
         inCombat = false;
         combatStart = GetTime();
         TTD_Hide();
-        textTimeTillDeathText:SetText(""); -- Clear name text when out of combat
-        UpdateNameVisibility(); -- Ensure name visibility is correct (it might be hidden)
+        textTimeTillDeathText:SetText("");
+        UpdateNameVisibility();
+        ApplyCombatHideState();
     elseif event == "PLAYER_DEAD" then
         inCombat = false;
         TTD_Hide();
+        ApplyCombatHideState();
     end
 end);
 
@@ -343,8 +355,6 @@ TimeToKill.TTD:RegisterEvent("PLAYER_REGEN_ENABLED");
 TimeToKill.TTD:RegisterEvent("PLAYER_REGEN_DISABLED");
 TimeToKill.TTD:RegisterEvent("PLAYER_DEAD");
 
--- NEW: Slash command handler
--- NEW: Slash command handler
 SLASH_TIMETOKILL1 = "/ttk";
 SlashCmdList["TIMETOKILL"] = function(msg)
     local args = {};
@@ -352,13 +362,14 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         table.insert(args, string.lower(arg));
     end
 
-    -- MODIFIED: Check if args table is empty without using #
     if args[1] == nil then
         print("TimeToKill Usage:");
         print("|cFF33FF99/ttk lock|r - Locks the frame position and enables click-through.");
         print("|cFF33FF99/ttk unlock|r - Unlocks the frame position (Shift-drag to move).");
         print("|cFF33FF99/ttk name on|r - Shows the 'Time Till Death:' text.");
         print("|cFF33FF99/ttk name off|r - Hides the 'Time Till Death:' text.");
+        print("|cFF33FF99/ttk combathide on|r - Hides frame and text when out of combat.");
+        print("|cFF33FF99/ttk combathide off|r - Frame and text remain visible out of combat.");
         return;
     end
 
@@ -377,7 +388,6 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         if option == "on" then
             TimeToKill.Settings.isNameVisible = true;
             UpdateNameVisibility();
-            -- If in combat, ensure the text is set correctly
             if inCombat then TTD_Show(); end
             print("TimeToKill: Name text enabled.");
         elseif option == "off" then
@@ -386,6 +396,18 @@ SlashCmdList["TIMETOKILL"] = function(msg)
             print("TimeToKill: Name text disabled.");
         else
             print("TimeToKill: Usage: /ttk name [on|off]");
+        end
+    elseif command == "combathide" then
+        if option == "on" then
+            TimeToKill.Settings.combatHide = true;
+            ApplyCombatHideState();
+            print("TimeToKill: Combat hide enabled. Frame will hide when out of combat.");
+        elseif option == "off" then
+            TimeToKill.Settings.combatHide = false;
+            ApplyCombatHideState();
+            print("TimeToKill: Combat hide disabled. Frame will remain visible.");
+        else
+            print("TimeToKill: Usage: /ttk combathide [on|off]");
         end
     else
         print("TimeToKill: Unknown command. Type /ttk for help.");

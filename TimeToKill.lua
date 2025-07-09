@@ -94,10 +94,10 @@ local function ApplyFramePosition()
 
     if not effectiveRelativeTo then
         effectiveRelativeTo = getglobal(defaultPosition.relativeTo);
-        
+
         if not (effectiveRelativeTo and type(effectiveRelativeTo) == "table" and effectiveRelativeTo.SetPoint) then
             effectiveRelativeTo = UIParent;
-            
+
             currentPositionConfig.point = "CENTER";
             currentPositionConfig.relativeTo = "UIParent";
             currentPositionConfig.relativePoint = "CENTER";
@@ -110,7 +110,7 @@ local function ApplyFramePosition()
             currentPositionConfig.x = defaultPosition.x;
             currentPositionConfig.y = defaultPosition.y;
         end
-        
+
         TimeToKill.Position.point = currentPositionConfig.point;
         TimeToKill.Position.relativeTo = currentPositionConfig.relativeTo;
         TimeToKill.Position.relativePoint = currentPositionConfig.relativePoint;
@@ -130,7 +130,7 @@ local function ApplyFramePosition()
     else
         ttdFrame:ClearAllPoints();
         ttdFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 0);
-        
+
         TimeToKill.Position.point = "CENTER";
         TimeToKill.Position.relativeTo = "UIParent";
         TimeToKill.Position.relativePoint = "CENTER";
@@ -152,7 +152,7 @@ ttdFrame:SetScript("OnMouseDown", function(_, button)
 
     if IsShiftKeyDown() then
         isMoving = true;
-        
+
         local success, err = pcall(ttdFrame.StartMoving, ttdFrame);
         if not success then
             isMoving = false;
@@ -177,7 +177,7 @@ ttdFrame:SetScript("OnMouseUp", function(_, button)
         isMoving = false;
         return;
     end
-    
+
     isMoving = false;
 
     if not TimeToKill then
@@ -199,7 +199,7 @@ ttdFrame:SetScript("OnMouseUp", function(_, button)
         return;
     end
     screenY = getBottomVal;
-    
+
     TimeToKill.Position.point = "BOTTOMLEFT";
     TimeToKill.Position.relativeTo = "UIParent";
     TimeToKill.Position.relativePoint = "BOTTOMLEFT";
@@ -239,12 +239,12 @@ local function TTDLogic()
                     combatStart = GetTime();
                 end
             end
-            
+
             local effectiveMaxHP = maxHP_target;
             if targetName and targetName == 'Vaelastrasz the Corrupt' then
                 effectiveMaxHP = maxHP_target * 0.3;
             end
-            
+
             local missingHP = effectiveMaxHP - currentHP_target;
             local secondsInCombatSegment = timeSinceLastUpdate - combatStart;
 
@@ -253,7 +253,7 @@ local function TTDLogic()
                 if currentDPS > 0 then
                     local estimatedTotalFightSeconds = effectiveMaxHP / currentDPS;
                     remainingSeconds = (estimatedTotalFightSeconds - secondsInCombatSegment) * 0.90;
-                
+
                     if (remainingSeconds ~= remainingSeconds) or remainingSeconds < 0 then
                         textTimeTillDeath:SetText("-.--");
                     else
@@ -358,11 +358,19 @@ TimeToKill.TTD:RegisterEvent("PLAYER_DEAD");
 SLASH_TIMETOKILL1 = "/ttk";
 SlashCmdList["TIMETOKILL"] = function(msg)
     local args = {};
-    for arg in string.gmatch(msg, "[^%s]+") do
-        table.insert(args, string.lower(arg));
+    local i = 1;
+    while true do
+        local next_space = string.find(msg, " ", i);
+        if not next_space then
+            table.insert(args, string.sub(msg, i));
+            break;
+        end
+        table.insert(args, string.sub(msg, i, next_space - 1));
+        i = next_space + 1;
     end
 
-    if args[1] == nil then
+    -- The rest of your function logic remains the same...
+    if args[1] == nil or args[1] == "" then
         print("TimeToKill Usage:");
         print("|cFF33FF99/ttk lock|r - Locks the frame position and enables click-through.");
         print("|cFF33FF99/ttk unlock|r - Unlocks the frame position (Shift-drag to move).");
@@ -373,8 +381,8 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         return;
     end
 
-    local command = args[1];
-    local option = args[2];
+    local command = string.lower(args[1]);
+    local option = args[2] and string.lower(args[2]) or nil;
 
     if command == "lock" then
         TimeToKill.Settings.isLocked = true;

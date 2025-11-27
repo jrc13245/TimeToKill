@@ -1,10 +1,140 @@
 local lastCheckTime = 0;
 local checkInterval = 0.1;
 
+-- Display smoothing factor (lower = smoother but slower to respond)
+local DISPLAY_SMOOTHING = 0.15;
+
+-- Thresholds and constants
+local EXECUTE_THRESHOLD = 0.20;  -- 20% HP
+local WARNING_THRESHOLD = 40;    -- Seconds
+local SAMPLE_INTERVAL = 1.0;     -- Sample every 1 second
+
+-- Test mode flag
+local testMode = false;
+
 -- SuperWoW detection
 local isSuperWoW = SUPERWOW_VERSION ~= nil;
 local hasGUIDSupport = false;
 local hasCombatLogSupport = false;
+
+-- ============================================================================
+-- RLS ESTIMATOR (Recursive Least Squares with Forgetting Factor)
+-- ============================================================================
+local RLS = {}
+RLS.name = "RLS"
+RLS.lambda = 0.95           -- Forgetting factor (0.9-0.99 typical)
+RLS.lambdaFast = 0.85       -- Faster adaptation after detected change
+RLS.initialP = 1000000      -- Initial covariance (large = uncertain)
+RLS.minSamples = 3
+RLS.changeThreshold = 3.0   -- Std devs for change detection
+
+function RLS:new()
+    local obj = {
+        theta = 0,               -- DPS estimate
+        P = self.initialP,       -- Covariance (uncertainty)
+        lastHP = nil,
+        lastTime = nil,
+        sampleCount = 0,
+        currentLambda = self.lambda,
+        residualMA = 0,          -- Moving average of residuals
+        residualVar = 1000,      -- Variance of residuals
+        adaptCountdown = 0       -- Countdown for fast adaptation mode
+    }
+    setmetatable(obj, {__index = self})
+    return obj
+end
+
+function RLS:addSample(hp, maxHp, t)
+    self.sampleCount = self.sampleCount + 1
+
+    if not self.lastHP or not self.lastTime then
+        self.lastHP = hp
+        self.lastTime = t
+        return
+    end
+
+    local dt = t - self.lastTime
+    if dt < 0.01 then return end  -- Skip tiny intervals
+
+    -- Compute observed DPS for this interval
+    local dhp = self.lastHP - hp  -- Positive when HP decreasing
+    local observedDPS = dhp / dt
+
+    -- Skip if no meaningful damage (immunity, intermission, healing)
+    if dhp < -100 then
+        self.lastHP = hp
+        self.lastTime = t
+        return
+    end
+
+    -- Change detection: large residual indicates regime change
+    local residual = observedDPS - self.theta
+    local stdResidual = math.abs(residual) / math.sqrt(math.max(1, self.residualVar))
+
+    if stdResidual > self.changeThreshold and self.sampleCount > 5 then
+        -- Detected significant change - increase adaptation
+        self.adaptCountdown = 10
+        self.P = self.P * 10  -- Increase uncertainty
+    end
+
+    -- Use faster lambda during adaptation period
+    local effectiveLambda = self.currentLambda
+    if self.adaptCountdown > 0 then
+        effectiveLambda = self.lambdaFast
+        self.adaptCountdown = self.adaptCountdown - 1
+    end
+
+    -- RLS update equations
+    local K = self.P / (effectiveLambda + self.P)
+    self.theta = self.theta + K * residual
+    self.P = (1 / effectiveLambda) * (self.P - K * self.P)
+
+    -- Prevent numerical issues
+    if self.P > self.initialP then self.P = self.initialP end
+    if self.P < 0.001 then self.P = 0.001 end
+
+    -- Update residual statistics (for change detection)
+    local alpha = 0.1
+    self.residualMA = (1 - alpha) * self.residualMA + alpha * residual
+    self.residualVar = (1 - alpha) * self.residualVar + alpha * residual * residual
+
+    -- Ensure DPS stays non-negative for TTK calculation
+    if self.theta < 0 then self.theta = 0 end
+
+    self.lastHP = hp
+    self.lastTime = t
+end
+
+function RLS:getDPS()
+    if self.sampleCount < self.minSamples then return 0 end
+    return math.max(0, self.theta)
+end
+
+function RLS:getTTK()
+    if self.sampleCount < self.minSamples then return -1 end
+    if not self.lastHP then return -1 end
+
+    local dps = self:getDPS()
+    if dps <= 0 then return -1 end
+
+    return self.lastHP / dps
+end
+
+function RLS:reset()
+    self.theta = 0
+    self.P = self.initialP
+    self.lastHP = nil
+    self.lastTime = nil
+    self.sampleCount = 0
+    self.currentLambda = self.lambda
+    self.residualMA = 0
+    self.residualVar = 1000
+    self.adaptCountdown = 0
+end
+
+-- ============================================================================
+-- ADDON INITIALIZATION
+-- ============================================================================
 
 if not TimeToKill then
     TimeToKill = {};
@@ -16,11 +146,8 @@ if not TimeToKill.Settings then
     TimeToKill.Settings.isLocked = false;
     TimeToKill.Settings.isNameVisible = true;
     TimeToKill.Settings.combatHide = false;
-    TimeToKill.Settings.smoothingFactor = 0.3;  -- EMA smoothing (0.1-0.5, lower = more smoothing)
     TimeToKill.Settings.minSampleTime = 2.0;    -- Minimum seconds before showing prediction
     TimeToKill.Settings.conservativeFactor = 0.95;  -- Multiply final result (0.9-1.0)
-    TimeToKill.Settings.useCombatLog = true;  -- Use RAW_COMBATLOG for damage tracking
-    TimeToKill.Settings.burstThreshold = 3.0;    -- Ignore DPS spikes > 3x average
 end
 
 local defaultPosition = {
@@ -38,12 +165,9 @@ local remainingSeconds = 0;
 local isMoving = false;
 
 -- Per-target tracking
-local targetTracking = {};
+local targetTracking = {};  -- [guid] = { rls = RLS instance, name, initialHP, firstSeen }
 local currentTargetGUID = nil;
 local lastTargetGUID = nil;
-
--- Combat log damage tracking (SuperWoW only)
-local combatLogDamage = {};  -- [targetGUID] = { totalDamage, startTime, lastUpdate }
 
 local ttdFrame = TimeToKill.TTD;
 ttdFrame:SetFrameStrata("HIGH");
@@ -57,6 +181,24 @@ textTimeTillDeath:SetPoint("CENTER", 0, -20);
 local textTimeTillDeathText = ttdFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText");
 textTimeTillDeathText:SetFont("Fonts\\FRIZQT__.TTF", 13, "OUTLINE, MONOCHROME");
 textTimeTillDeathText:SetPoint("CENTER", 0, 0);
+
+-- DPS display (below TTK)
+local textDPS = ttdFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText");
+textDPS:SetFont("Fonts\\FRIZQT__.TTF", 11, "OUTLINE, MONOCHROME");
+textDPS:SetPoint("CENTER", 0, -40);
+textDPS:SetTextColor(0.7, 0.7, 1.0);  -- Light blue
+
+-- TTE display (Time to Execute - below DPS)
+local textTTE = ttdFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText");
+textTTE:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE, MONOCHROME");
+textTTE:SetPoint("CENTER", 0, -54);
+textTTE:SetTextColor(1.0, 0.9, 0.9);  -- Light red
+
+-- HP display (top)
+local textHP = ttdFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText");
+textHP:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE, MONOCHROME");
+textHP:SetPoint("CENTER", 0, 15);
+textHP:SetTextColor(0.8, 0.8, 0.8);  -- Light gray
 
 -- SuperWoW capability detection
 local function DetectSuperWoWCapabilities()
@@ -262,6 +404,9 @@ end
 
 local function TTD_Hide()
     textTimeTillDeath:SetText("-.--");
+    textDPS:SetText("");
+    textTTE:SetText("");
+    textHP:SetText("");
 end
 
 -- Get GUID for target (SuperWoW-aware)
@@ -293,27 +438,48 @@ local function GetTargetGUID()
     return nil;
 end
 
+-- Smooth a value for display
+local function SmoothValue(current, target, factor)
+    if not current or current < 0 then return target end
+    if not target or target < 0 then return current end
+    return current + (target - current) * factor
+end
+
+-- Format HP with K/M suffixes
+local function FormatHP(hp)
+    if hp >= 1000000 then
+        return string.format("%.1fM", hp / 1000000)
+    elseif hp >= 1000 then
+        return string.format("%.0fK", hp / 1000)
+    else
+        return string.format("%.0f", hp)
+    end
+end
+
+-- Format DPS with K/M suffixes
+local function FormatDPS(dps)
+    if not dps or dps <= 0 then return "0" end
+    if dps >= 1000000 then
+        return string.format("%.2fM", dps / 1000000)
+    elseif dps >= 1000 then
+        return string.format("%.1fK", dps / 1000)
+    end
+    return string.format("%.0f", dps)
+end
+
 -- Get or create target tracking data
 local function GetTargetData(guid)
     if not targetTracking[guid] then
         targetTracking[guid] = {
+            rlsTTK = RLS:new(),      -- Time to Kill (HP -> 0)
+            rlsTTE = RLS:new(),      -- Time to Execute (HP -> 20%)
+            name = nil,
             firstSeen = GetTime(),
-            lastUpdate = GetTime(),
             initialHP = nil,
             initialMaxHP = nil,
-            lastHP = nil,
-            lastHPTime = nil,
-            name = nil,
-            -- Exponential moving average DPS
-            emaDPS = nil,
-            -- Simple average for comparison
-            avgDPS = nil,
-            totalDamageDone = 0,
-            -- Burst detection
-            maxDPS = 0,
-            minDPS = 999999,
-            -- Sample tracking
-            sampleCount = 0
+            lastSampleTime = 0,      -- For throttling samples
+            smoothTTK = nil,         -- Smoothed TTK display value
+            smoothTTE = nil          -- Smoothed TTE display value
         };
     end
     return targetTracking[guid];
@@ -325,135 +491,22 @@ local function CleanupTargetData()
     for _ in pairs(targetTracking) do
         count = count + 1;
     end
-    
+
     if count > 10 then
         local oldest = nil;
         local oldestTime = GetTime();
-        
+
         for guid, data in pairs(targetTracking) do
-            if guid ~= currentTargetGUID and data.lastUpdate < oldestTime then
-                oldestTime = data.lastUpdate;
+            if guid ~= currentTargetGUID and data.firstSeen < oldestTime then
+                oldestTime = data.firstSeen;
                 oldest = guid;
             end
         end
-        
+
         if oldest then
             targetTracking[oldest] = nil;
-            if combatLogDamage[oldest] then
-                combatLogDamage[oldest] = nil;
-            end
         end
     end
-end
-
--- Calculate instantaneous DPS from HP change
-local function CalculateInstantDPS(targetData, currentHP, currentTime)
-    if not targetData.lastHP or not targetData.lastHPTime then
-        return nil;
-    end
-    
-    local timeDiff = currentTime - targetData.lastHPTime;
-    local hpDiff = targetData.lastHP - currentHP;
-    
-    if timeDiff <= 0 or hpDiff <= 0 then
-        return nil;
-    end
-    
-    return hpDiff / timeDiff;
-end
-
--- Update DPS using exponential moving average
-local function UpdateDPS(targetData, currentHP, currentTime)
-    local instantDPS = CalculateInstantDPS(targetData, currentHP, currentTime);
-    
-    if not instantDPS or instantDPS <= 0 then
-        -- Just update last HP for next calculation
-        targetData.lastHP = currentHP;
-        targetData.lastHPTime = currentTime;
-        return false;
-    end
-    
-    targetData.sampleCount = targetData.sampleCount + 1;
-    
-    -- Track min/max for burst detection
-    if instantDPS > targetData.maxDPS then
-        targetData.maxDPS = instantDPS;
-    end
-    if instantDPS < targetData.minDPS then
-        targetData.minDPS = instantDPS;
-    end
-    
-    -- Burst detection - ignore outliers
-    if targetData.emaDPS and targetData.emaDPS > 0 then
-        local ratio = instantDPS / targetData.emaDPS;
-        if ratio > TimeToKill.Settings.burstThreshold or ratio < (1 / TimeToKill.Settings.burstThreshold) then
-            -- This is a burst spike, don't update EMA but still track last HP
-            targetData.lastHP = currentHP;
-            targetData.lastHPTime = currentTime;
-            return false;
-        end
-    end
-    
-    -- Update exponential moving average
-    if not targetData.emaDPS then
-        targetData.emaDPS = instantDPS;
-        targetData.avgDPS = instantDPS;
-    else
-        local alpha = TimeToKill.Settings.smoothingFactor;
-        targetData.emaDPS = (alpha * instantDPS) + ((1 - alpha) * targetData.emaDPS);
-        
-        -- Also track simple average for comparison
-        targetData.avgDPS = ((targetData.avgDPS * (targetData.sampleCount - 1)) + instantDPS) / targetData.sampleCount;
-    end
-    
-    -- Update last HP tracking
-    targetData.lastHP = currentHP;
-    targetData.lastHPTime = currentTime;
-    targetData.lastUpdate = currentTime;
-    
-    return true;
-end
-
--- Get DPS from combat log tracking (SuperWoW)
-local function GetCombatLogDPS(guid, currentTime)
-    if not hasCombatLogSupport or not TimeToKill.Settings.useCombatLog then
-        return nil;
-    end
-    
-    local logData = combatLogDamage[guid];
-    if not logData or logData.totalDamage <= 0 or not logData.startTime then
-        return nil;
-    end
-    
-    local elapsed = currentTime - logData.startTime;
-    if elapsed <= 0 then
-        return nil;
-    end
-    
-    return logData.totalDamage / elapsed;
-end
-
--- Hybrid DPS calculation
-local function GetBestDPS(targetData, guid, currentTime)
-    local hpDPS = targetData.emaDPS;
-    local logDPS = GetCombatLogDPS(guid, currentTime);
-    
-    -- If we have both, blend them
-    if hpDPS and logDPS and hpDPS > 0 and logDPS > 0 then
-        -- Weight combat log more heavily as it's more accurate
-        return (hpDPS * 0.3) + (logDPS * 0.7);
-    end
-    
-    -- Return whichever we have
-    if logDPS and logDPS > 0 then
-        return logDPS;
-    end
-    
-    if hpDPS and hpDPS > 0 then
-        return hpDPS;
-    end
-    
-    return nil;
 end
 
 -- Check if target should reset (resurrected/reset)
@@ -461,17 +514,18 @@ local function ShouldResetTarget(targetData, currentHP, maxHP)
     if not targetData.initialHP or not targetData.initialMaxHP then
         return false;
     end
-    
+
     -- If HP increased significantly, target was healed/reset
-    if targetData.lastHP and currentHP > targetData.lastHP + (maxHP * 0.15) then
+    local rlsLastHP = targetData.rlsTTK.lastHP
+    if rlsLastHP and currentHP > rlsLastHP + (maxHP * 0.15) then
         return true;
     end
-    
+
     -- If max HP changed, it's likely a different mob
     if maxHP ~= targetData.initialMaxHP then
         return true;
     end
-    
+
     return false;
 end
 
@@ -488,64 +542,50 @@ local function GetEffectiveMaxHP(targetName, maxHP)
     return maxHP;
 end
 
--- Parse combat log damage (SuperWoW RAW_COMBATLOG)
-local function ParseCombatLogDamage(eventText)
-    if not hasCombatLogSupport or not TimeToKill.Settings.useCombatLog or not currentTargetGUID then
-        return;
-    end
-    
-    -- Pattern 1: Direct damage - "hits/crits <targetGUID> for <damage>"
-    -- Example: "0x0000000000581AB8's Swipe crits 0xF130003E6D269BEA for 287."
-    local _, _, targetGUID, damage = string.find(eventText, " (0x%x+) for (%d+)");
-    
-    -- Pattern 2: DoT/suffer damage - "<targetGUID> suffers <damage>"
-    -- Example: "0xF130003E6D269BE6 suffers 34 Physical damage from"
-    if not targetGUID then
-        _, _, targetGUID, damage = string.find(eventText, "^[^%s]+ [^%s]+ (0x%x+) suffers (%d+)");
-    end
-    
-    if targetGUID and damage and targetGUID == currentTargetGUID then
-        local dmgValue = tonumber(damage);
-        if dmgValue and dmgValue > 0 then
-            if not combatLogDamage[targetGUID] then
-                combatLogDamage[targetGUID] = {
-                    totalDamage = 0,
-                    startTime = GetTime(),
-                    lastUpdate = GetTime()
-                };
-            end
-            
-            combatLogDamage[targetGUID].totalDamage = combatLogDamage[targetGUID].totalDamage + dmgValue;
-            combatLogDamage[targetGUID].lastUpdate = GetTime();
-        end
-    end
-end
-
 local function TTDLogic()
-    if not (UnitIsEnemy("player", "target") or UnitReaction("player", "target") == 4) then
+    -- Check if valid target (test mode tracks any enemy, normal mode tracks enemies or neutral)
+    local isValidTarget = false;
+    if testMode then
+        isValidTarget = UnitExists("target") and UnitCanAttack("player", "target");
+    else
+        isValidTarget = UnitIsEnemy("player", "target") or UnitReaction("player", "target") == 4;
+    end
+
+    if not isValidTarget then
         textTimeTillDeath:SetText("-.--");
+        textDPS:SetText("");
+        textTTE:SetText("");
+        textHP:SetText("");
         currentTargetGUID = nil;
         return;
     end
-    
+
     -- Get target GUID (SuperWoW-aware)
     local guid = GetTargetGUID();
-    
+
     if not guid then
         textTimeTillDeath:SetText("-.--");
+        textDPS:SetText("");
+        textTTE:SetText("");
+        textHP:SetText("");
         currentTargetGUID = nil;
         return;
     end
-    
+
     local targetName = UnitName("target");
     local currentHP = UnitHealth("target");
     local maxHP = UnitHealthMax("target");
-    
+
     if not maxHP or maxHP <= 0 or not currentHP then
         textTimeTillDeath:SetText("-.--");
+        textDPS:SetText("");
+        textTTE:SetText("");
+        textHP:SetText("");
         return;
     end
-    
+
+    local hpPercent = (currentHP / maxHP) * 100;
+
     -- Detect target switch
     local targetChanged = (guid ~= currentTargetGUID);
     if targetChanged then
@@ -553,73 +593,104 @@ local function TTDLogic()
         currentTargetGUID = guid;
         CleanupTargetData();
     end
-    
+
     local targetData = GetTargetData(guid);
     targetData.name = targetName;
-    
+
     local currentTime = GetTime();
-    
+
     -- Initialize or reset if needed
     if not targetData.initialHP or ShouldResetTarget(targetData, currentHP, maxHP) then
         targetData.initialHP = currentHP;
         targetData.initialMaxHP = maxHP;
         targetData.firstSeen = currentTime;
-        targetData.lastHP = currentHP;
-        targetData.lastHPTime = currentTime;
-        targetData.lastUpdate = currentTime;
-        targetData.emaDPS = nil;
-        targetData.avgDPS = nil;
-        targetData.maxDPS = 0;
-        targetData.minDPS = 999999;
-        targetData.sampleCount = 0;
-        targetData.totalDamageDone = 0;
-        
-        -- Reset combat log tracking
-        if combatLogDamage[guid] then
-            combatLogDamage[guid] = {
-                totalDamage = 0,
-                startTime = currentTime,
-                lastUpdate = currentTime
-            };
+        targetData.lastSampleTime = 0;
+        targetData.smoothTTK = nil;
+        targetData.smoothTTE = nil;
+        targetData.rlsTTK:reset();
+        targetData.rlsTTE:reset();
+    end
+
+    -- Display HP (always show)
+    textHP:SetText(string.format("%s / %s", FormatHP(currentHP), FormatHP(maxHP)));
+
+    -- Throttle samples to SAMPLE_INTERVAL (1 second)
+    if (currentTime - targetData.lastSampleTime) >= SAMPLE_INTERVAL then
+        targetData.lastSampleTime = currentTime;
+
+        -- Feed TTK estimator with actual HP
+        targetData.rlsTTK:addSample(currentHP, maxHP, currentTime);
+
+        -- Feed TTE estimator with HP relative to execute threshold
+        local executeHP = maxHP * EXECUTE_THRESHOLD;
+        local effectiveHP = currentHP - executeHP;
+        if effectiveHP > 0 then
+            targetData.rlsTTE:addSample(effectiveHP, maxHP - executeHP, currentTime);
         end
     end
-    
-    -- Update DPS calculation
-    UpdateDPS(targetData, currentHP, currentTime);
-    
+
     -- Calculate effective max HP for special bosses
     local effectiveMaxHP = GetEffectiveMaxHP(targetName, maxHP);
-    
+
     -- Need minimum sample time before showing prediction
     local timeSinceFirstSeen = currentTime - targetData.firstSeen;
     if timeSinceFirstSeen < TimeToKill.Settings.minSampleTime then
         textTimeTillDeath:SetText("-.--");
+        textDPS:SetText("");
+        textTTE:SetText("");
         return;
     end
-    
-    -- Need at least 3 samples for reasonable accuracy
-    if targetData.sampleCount < 3 then
+
+    -- Get TTK from RLS estimator
+    local ttk = targetData.rlsTTK:getTTK();
+    local dps = targetData.rlsTTK:getDPS();
+
+    if ttk <= 0 or dps <= 0 then
         textTimeTillDeath:SetText("-.--");
+        textDPS:SetText("");
+        textTTE:SetText("");
         return;
     end
-    
-    -- Get best DPS estimate
-    local dps = GetBestDPS(targetData, guid, currentTime);
-    
-    if not dps or dps <= 0 then
-        textTimeTillDeath:SetText("-.--");
-        return;
-    end
-    
-    -- Calculate time to death
-    local remainingHP = currentHP;
+
+    -- Adjust for special boss mechanics
     if currentHP > effectiveMaxHP then
-        remainingHP = effectiveMaxHP;
+        if dps > 0 then
+            ttk = (effectiveMaxHP / dps);
+        end
     end
-    
+
     -- Apply conservative factor to account for optimistic predictions
-    remainingSeconds = (remainingHP / dps) * (1 / TimeToKill.Settings.conservativeFactor);
-    
+    local rawTTK = ttk * (1 / TimeToKill.Settings.conservativeFactor);
+
+    -- Apply display smoothing to reduce jumpiness
+    targetData.smoothTTK = SmoothValue(targetData.smoothTTK, rawTTK, DISPLAY_SMOOTHING);
+    remainingSeconds = targetData.smoothTTK;
+
+    -- Get TTE (Time to Execute) if above execute threshold
+    local tte = targetData.rlsTTE:getTTK();
+    if tte and tte > 0 and hpPercent > (EXECUTE_THRESHOLD * 100) then
+        targetData.smoothTTE = SmoothValue(targetData.smoothTTE, tte, DISPLAY_SMOOTHING);
+        textTTE:SetText(string.format("Execute: %.1fs", targetData.smoothTTE));
+    else
+        textTTE:SetText("");
+    end
+
+    -- Display DPS
+    textDPS:SetText(string.format("%s dps", FormatDPS(dps)));
+
+    -- Color coding based on HP% and TTK
+    local execThresholdPct = EXECUTE_THRESHOLD * 100;
+    if hpPercent <= execThresholdPct then
+        -- In execute range - RED
+        textTimeTillDeath:SetTextColor(0.8, 0.25, 0.25);
+    elseif remainingSeconds and remainingSeconds <= WARNING_THRESHOLD then
+        -- Warning threshold - YELLOW
+        textTimeTillDeath:SetTextColor(0.8, 0.8, 0.2);
+    else
+        -- Normal - WHITE
+        textTimeTillDeath:SetTextColor(1.0, 1.0, 1.0);
+    end
+
     -- Sanity checks
     if remainingSeconds ~= remainingSeconds or remainingSeconds < 0 or remainingSeconds > 3600 then
         textTimeTillDeath:SetText("-.--");
@@ -655,14 +726,11 @@ TimeToKill.TTD:SetScript("OnEvent", function()
         if TimeToKill.Settings.isLocked == nil then TimeToKill.Settings.isLocked = false; end
         if TimeToKill.Settings.isNameVisible == nil then TimeToKill.Settings.isNameVisible = true; end
         if TimeToKill.Settings.combatHide == nil then TimeToKill.Settings.combatHide = false; end
-        if TimeToKill.Settings.smoothingFactor == nil then TimeToKill.Settings.smoothingFactor = 0.3; end
         if TimeToKill.Settings.minSampleTime == nil then TimeToKill.Settings.minSampleTime = 2.0; end
         if TimeToKill.Settings.conservativeFactor == nil then TimeToKill.Settings.conservativeFactor = 0.95; end
-        if TimeToKill.Settings.useCombatLog == nil then TimeToKill.Settings.useCombatLog = true; end
-        if TimeToKill.Settings.burstThreshold == nil then TimeToKill.Settings.burstThreshold = 3.0; end
 
         DetectSuperWoWCapabilities();
-        
+
         ApplyFramePosition();
         ApplyLockState();
         UpdateNameVisibility();
@@ -684,24 +752,15 @@ TimeToKill.TTD:SetScript("OnEvent", function()
             if TimeToKill.Settings.combatHide == nil then
                 TimeToKill.Settings.combatHide = false;
             end
-            if TimeToKill.Settings.smoothingFactor == nil then
-                TimeToKill.Settings.smoothingFactor = 0.3;
-            end
             if TimeToKill.Settings.minSampleTime == nil then
                 TimeToKill.Settings.minSampleTime = 2.0;
             end
             if TimeToKill.Settings.conservativeFactor == nil then
                 TimeToKill.Settings.conservativeFactor = 0.95;
             end
-            if TimeToKill.Settings.useCombatLog == nil then
-                TimeToKill.Settings.useCombatLog = true;
-            end
-            if TimeToKill.Settings.burstThreshold == nil then
-                TimeToKill.Settings.burstThreshold = 3.0;
-            end
 
             DetectSuperWoWCapabilities();
-            
+
             ApplyFramePosition();
             ApplyLockState();
             UpdateNameVisibility();
@@ -723,13 +782,6 @@ TimeToKill.TTD:SetScript("OnEvent", function()
         inCombat = false;
         TTD_Hide();
         ApplyCombatHideState();
-    elseif event == "RAW_COMBATLOG" then
-        -- SuperWoW raw combat log event
-        -- arg1: original event name
-        -- arg2: event text with GUIDs
-        if arg2 then
-            ParseCombatLogDamage(arg2);
-        end
     end
 end);
 
@@ -738,11 +790,6 @@ TimeToKill.TTD:RegisterEvent("ADDON_LOADED");
 TimeToKill.TTD:RegisterEvent("PLAYER_REGEN_ENABLED");
 TimeToKill.TTD:RegisterEvent("PLAYER_REGEN_DISABLED");
 TimeToKill.TTD:RegisterEvent("PLAYER_DEAD");
-
--- Register SuperWoW events if available
-if isSuperWoW then
-    TimeToKill.TTD:RegisterEvent("RAW_COMBATLOG");
-end
 
 SLASH_TIMETOKILL1 = "/ttk";
 SlashCmdList["TIMETOKILL"] = function(msg)
@@ -766,14 +813,10 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         print("|cFF33FF99/ttk name off|r - Hide 'Time Till Death:' text.");
         print("|cFF33FF99/ttk combathide on|r - Hide frame when out of combat.");
         print("|cFF33FF99/ttk combathide off|r - Keep frame visible.");
-        print("|cFF33FF99/ttk smooth <0.1-0.5>|r - EMA smoothing (default 0.3).");
         print("|cFF33FF99/ttk conservative <0.9-1.0>|r - Conservative factor (default 0.95).");
         print("|cFF33FF99/ttk minsample <seconds>|r - Min sample time (default 2.0).");
-        print("|cFF33FF99/ttk burst <multiplier>|r - Burst threshold (default 3.0).");
-        if isSuperWoW then
-            print("|cFF33FF99/ttk combatlog on|r - Enable combat log tracking.");
-            print("|cFF33FF99/ttk combatlog off|r - Disable combat log tracking.");
-        end
+        print("|cFF33FF99/ttk smooth <0.1-0.3>|r - Display smoothing (default 0.15).");
+        print("|cFF33FF99/ttk test|r - Toggle test mode (track any enemy).");
         print("|cFF33FF99/ttk debug|r - Show debug info.");
         print("|cFF33FF99/ttk status|r - Show addon status.");
         return;
@@ -815,18 +858,6 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         else
             print("TimeToKill: Usage: /ttk combathide [on|off]");
         end
-    elseif command == "smooth" then
-        if option then
-            local value = tonumber(option);
-            if value and value >= 0.1 and value <= 0.5 then
-                TimeToKill.Settings.smoothingFactor = value;
-                print("TimeToKill: Smoothing factor set to " .. value);
-            else
-                print("TimeToKill: Value must be between 0.1 and 0.5");
-            end
-        else
-            print("TimeToKill: Current smoothing: " .. TimeToKill.Settings.smoothingFactor);
-        end
     elseif command == "conservative" then
         if option then
             local value = tonumber(option);
@@ -851,73 +882,80 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         else
             print("TimeToKill: Current minimum sample time: " .. TimeToKill.Settings.minSampleTime .. "s");
         end
-    elseif command == "burst" then
+    elseif command == "smooth" then
         if option then
             local value = tonumber(option);
-            if value and value >= 1.5 and value <= 10.0 then
-                TimeToKill.Settings.burstThreshold = value;
-                print("TimeToKill: Burst threshold set to " .. value .. "x");
+            if value and value >= 0.05 and value <= 0.5 then
+                DISPLAY_SMOOTHING = value;
+                print("TimeToKill: Display smoothing set to " .. value);
             else
-                print("TimeToKill: Value must be between 1.5 and 10.0");
+                print("TimeToKill: Value must be between 0.05 and 0.5");
             end
         else
-            print("TimeToKill: Current burst threshold: " .. TimeToKill.Settings.burstThreshold .. "x");
+            print("TimeToKill: Current display smoothing: " .. DISPLAY_SMOOTHING);
         end
-    elseif command == "combatlog" then
-        if not isSuperWoW then
-            print("TimeToKill: Combat log tracking requires SuperWoW.");
-            return;
-        end
-        if option == "on" then
-            TimeToKill.Settings.useCombatLog = true;
-            print("TimeToKill: Combat log tracking enabled.");
-        elseif option == "off" then
-            TimeToKill.Settings.useCombatLog = false;
-            print("TimeToKill: Combat log tracking disabled.");
+    elseif command == "test" then
+        testMode = not testMode;
+        if testMode then
+            print("TimeToKill: Test mode |cFF00FF00ON|r - tracking any enemy in combat");
         else
-            print("TimeToKill: Usage: /ttk combatlog [on|off]");
+            print("TimeToKill: Test mode |cFFFF0000OFF|r - normal tracking");
         end
     elseif command == "status" then
         print("=== TimeToKill Status ===");
         if isSuperWoW then
             print("SuperWoW: |cFF00FF00v" .. (SUPERWOW_VERSION or "?") .. "|r");
             print("GUID: " .. (hasGUIDSupport and "|cFF00FF00Yes|r" or "|cFFFF0000No|r"));
-            print("Combat Log: " .. (TimeToKill.Settings.useCombatLog and "|cFF00FF00Enabled|r" or "|cFFFF0000Disabled|r"));
         else
             print("SuperWoW: |cFFFF0000Not Detected|r");
         end
+        print("Algorithm: RLS (Recursive Least Squares)");
+        print("Test Mode: " .. (testMode and "|cFF00FF00ON|r" or "|cFFFF0000OFF|r"));
         print("Settings:");
-        print("  Smoothing: " .. TimeToKill.Settings.smoothingFactor);
-        print("  Conservative: " .. TimeToKill.Settings.conservativeFactor);
-        print("  Min Sample: " .. TimeToKill.Settings.minSampleTime .. "s");
-        print("  Burst Threshold: " .. TimeToKill.Settings.burstThreshold .. "x");
+        print("  Conservative Factor: " .. TimeToKill.Settings.conservativeFactor);
+        print("  Min Sample Time: " .. TimeToKill.Settings.minSampleTime .. "s");
+        print("  Display Smoothing: " .. DISPLAY_SMOOTHING);
+        print("  Sample Interval: " .. SAMPLE_INTERVAL .. "s");
+        print("  Execute Threshold: " .. (EXECUTE_THRESHOLD * 100) .. "%");
+        print("  Warning Threshold: " .. WARNING_THRESHOLD .. "s");
+        print("RLS Parameters:");
+        print("  Lambda: " .. RLS.lambda .. " (normal) / " .. RLS.lambdaFast .. " (fast)");
+        print("  Min Samples: " .. RLS.minSamples);
         local count = 0;
         for _ in pairs(targetTracking) do count = count + 1; end
-        print("  Tracked Targets: " .. count);
+        print("Tracked Targets: " .. count);
     elseif command == "debug" then
         if currentTargetGUID and targetTracking[currentTargetGUID] then
             local data = targetTracking[currentTargetGUID];
+            local rlsTTK = data.rlsTTK;
+            local rlsTTE = data.rlsTTE;
             print("=== TimeToKill Debug ===");
             print("Target: " .. (data.name or "Unknown"));
             print("GUID: " .. (hasGUIDSupport and currentTargetGUID or "(fallback)"));
             print("Combat time: " .. string.format("%.2f", GetTime() - data.firstSeen) .. "s");
-            print("Samples: " .. data.sampleCount);
-            if data.emaDPS then
-                print("EMA DPS: " .. string.format("%.2f", data.emaDPS));
+            print("");
+            print("TTK Estimator (Time to Kill):");
+            print("  Samples: " .. rlsTTK.sampleCount);
+            print("  DPS: " .. FormatDPS(rlsTTK:getDPS()));
+            print("  TTK: " .. string.format("%.2f", rlsTTK:getTTK()) .. "s");
+            print("  Covariance (P): " .. string.format("%.0f", rlsTTK.P));
+            print("  Adapt Countdown: " .. rlsTTK.adaptCountdown);
+            if rlsTTK.lastHP then
+                print("  Last HP: " .. FormatHP(rlsTTK.lastHP));
             end
-            if data.avgDPS then
-                print("Avg DPS: " .. string.format("%.2f", data.avgDPS));
+            print("");
+            print("TTE Estimator (Time to Execute):");
+            print("  Samples: " .. rlsTTE.sampleCount);
+            print("  TTE: " .. string.format("%.2f", rlsTTE:getTTK()) .. "s");
+            print("  Covariance (P): " .. string.format("%.0f", rlsTTE.P));
+            print("  Adapt Countdown: " .. rlsTTE.adaptCountdown);
+            print("");
+            print("Display Values:");
+            if data.smoothTTK then
+                print("  Smooth TTK: " .. string.format("%.2f", data.smoothTTK) .. "s");
             end
-            print("Max DPS: " .. string.format("%.2f", data.maxDPS));
-            print("Min DPS: " .. string.format("%.2f", data.minDPS));
-            if hasCombatLogSupport and combatLogDamage[currentTargetGUID] then
-                local logData = combatLogDamage[currentTargetGUID];
-                print("Log Damage: " .. logData.totalDamage);
-                local elapsed = GetTime() - logData.startTime;
-                if elapsed > 0 and logData.totalDamage > 0 then
-                    local logDPS = logData.totalDamage / elapsed;
-                    print("Log DPS: " .. string.format("%.2f", logDPS));
-                end
+            if data.smoothTTE then
+                print("  Smooth TTE: " .. string.format("%.2f", data.smoothTTE) .. "s");
             end
         else
             print("TimeToKill: No target data available.");

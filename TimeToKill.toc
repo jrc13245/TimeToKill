@@ -1,7 +1,7 @@
 ## Interface: 11200
 ## Title: TimeToKill
-## Notes: TimeToKill - cut down version of EliteWarriorCombat by jlabranche
-## Version: 1.1
+## Notes: Advanced TTK estimation with RLS algorithm. Credits: jlabranche (EliteWarriorCombat), MarcelineVQ & Ehawne (RLS), Torio (SuperWoW)
+## Version: 2.0
 ## Author: Hobbitt - TurtleWoW, Torio
 ## SavedVariables: TimeToKill
 TimeToKill.lua

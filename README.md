@@ -23,13 +23,25 @@ USAGE:
 Shift-drag when unlocked to move - clickthrough enabled when locked
 
 COMMANDS:
- /ttk - Show help
- /ttk lock|unlock - Toggle frame lock
- /ttk name on|off - Show/hide label text
- /ttk combathide on|off - Hide frame when out of combat
- /ttk conservative <0.9-1.0> - Set conservative factor (default 0.95)
- /ttk minsample <seconds> - Set minimum sample time (default 2.0)
- /ttk smooth <0.1-0.3> - Set display smoothing (default 0.15, lower = smoother)
- /ttk test - Toggle test mode (track any enemy vs normal tracking)
- /ttk status - Show addon status and RLS settings
- /ttk debug - Show detailed RLS debug info for current target
+
+**Basic Commands:**
+- `/ttk` - Show help
+
+**UI Configuration:**
+- `/ttk lock` - Lock frame (enables click-through)
+- `/ttk unlock` - Unlock frame (allows dragging with Shift)
+- `/ttk name on|off` - Show/hide label text
+- `/ttk combathide on|off` - Auto-hide frame when out of combat
+
+**Calculation Settings:**
+- `/ttk conservative <0.9-1.0>` - Set conservative factor (default: 0.95)
+  - Lower values = more cautious time estimates
+- `/ttk minsample <seconds>` - Set minimum sample time (default: 2.0)
+  - Range: 0.5-10.0 seconds before showing estimates
+- `/ttk smooth <0.1-0.3>` - Set display smoothing factor (default: 0.15)
+  - Lower values = smoother display, higher = more responsive
+
+**Development & Debug:**
+- `/ttk test` - Toggle test mode (track any enemy vs normal tracking)
+- `/ttk status` - Show addon status, settings, and tracked targets
+- `/ttk debug` - Show detailed RLS debug info for current target

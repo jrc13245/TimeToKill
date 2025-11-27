@@ -49,3 +49,19 @@ COMMANDS:
 - `/ttk test` - Toggle test mode (track any enemy vs normal tracking)
 - `/ttk status` - Show addon status, settings, and tracked targets
 - `/ttk debug` - Show detailed RLS debug info for current target
+
+TROUBLESHOOTING:
+
+**Settings not persisting after /reload:**
+
+If your settings reset every time you reload the UI, you have corrupted SavedVariables from an older version of the addon.
+
+To fix this:
+1. Exit WoW completely
+2. Delete the old SavedVariables file:
+   - Path: `WTF/Account/YOURACCOUNTNAME/SavedVariables/TimeToKill.lua`
+3. Launch WoW - you should see "First run - initializing settings" in green
+4. Configure your settings (`/ttk hp off`, move frame position, etc.)
+5. `/reload` to test - settings should now persist!
+
+**Note:** Once properly initialized, both `/reload` and clean exit will save your settings. The issue is only caused by corrupted old SavedVariables that need to be deleted.

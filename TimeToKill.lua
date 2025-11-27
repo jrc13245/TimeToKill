@@ -136,22 +136,9 @@ end
 -- ADDON INITIALIZATION
 -- ============================================================================
 
-if not TimeToKill then
-    TimeToKill = {};
-end
-
-if not TimeToKill.Settings then
-    TimeToKill.Settings = {};
-
-    TimeToKill.Settings.isLocked = false;
-    TimeToKill.Settings.isNameVisible = true;
-    TimeToKill.Settings.combatHide = false;
-    TimeToKill.Settings.minSampleTime = 2.0;    -- Minimum seconds before showing prediction
-    TimeToKill.Settings.conservativeFactor = 0.95;  -- Multiply final result (0.9-1.0)
-    TimeToKill.Settings.showExecute = true;     -- Show execute phase timer
-    TimeToKill.Settings.showDPS = true;         -- Show DPS display
-    TimeToKill.Settings.showHP = true;          -- Show HP display
-end
+-- Create minimal TimeToKill table for frame creation
+-- SavedVariables will populate Settings and Position after this runs
+TimeToKill = TimeToKill or {};
 
 local defaultPosition = {
     point = "BOTTOMLEFT",
@@ -202,6 +189,37 @@ local textHP = ttdFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText");
 textHP:SetFont("Fonts\\FRIZQT__.TTF", 10, "OUTLINE, MONOCHROME");
 textHP:SetPoint("CENTER", 0, 15);
 textHP:SetTextColor(0.8, 0.8, 0.8);  -- Light gray
+
+-- Initialize settings (called after SavedVariables are loaded)
+local function InitializeSettings()
+    local SETTINGS_VERSION = 2;
+
+    -- Create Settings table if it doesn't exist
+    if not TimeToKill.Settings then
+        TimeToKill.Settings = {};
+    end
+
+    -- Check if we need to show initialization message
+    local isFirstRun = (TimeToKill.Settings.version == nil);
+    local isUpgrade = (TimeToKill.Settings.version and TimeToKill.Settings.version < SETTINGS_VERSION);
+
+    if isFirstRun then
+        DEFAULT_CHAT_FRAME:AddMessage("|cFF33FF99TimeToKill: First run - initializing settings|r");
+    elseif isUpgrade then
+        DEFAULT_CHAT_FRAME:AddMessage("|cFFFF8800TimeToKill: Upgrading settings from v" .. TimeToKill.Settings.version .. " to v" .. SETTINGS_VERSION .. "|r");
+    end
+
+    -- Set defaults for any missing settings (preserves existing saved values!)
+    TimeToKill.Settings.version = SETTINGS_VERSION;
+    if TimeToKill.Settings.isLocked == nil then TimeToKill.Settings.isLocked = false; end
+    if TimeToKill.Settings.isNameVisible == nil then TimeToKill.Settings.isNameVisible = true; end
+    if TimeToKill.Settings.combatHide == nil then TimeToKill.Settings.combatHide = false; end
+    if TimeToKill.Settings.minSampleTime == nil then TimeToKill.Settings.minSampleTime = 2.0; end
+    if TimeToKill.Settings.conservativeFactor == nil then TimeToKill.Settings.conservativeFactor = 0.95; end
+    if TimeToKill.Settings.showExecute == nil then TimeToKill.Settings.showExecute = true; end
+    if TimeToKill.Settings.showDPS == nil then TimeToKill.Settings.showDPS = true; end
+    if TimeToKill.Settings.showHP == nil then TimeToKill.Settings.showHP = true; end
+end
 
 -- SuperWoW capability detection
 local function DetectSuperWoWCapabilities()
@@ -709,8 +727,8 @@ local function TTDLogic()
         textTimeTillDeath:SetTextColor(1.0, 1.0, 1.0);
     end
 
-    -- Sanity checks
-    if remainingSeconds ~= remainingSeconds or remainingSeconds < 0 or remainingSeconds > 3600 then
+    -- Sanity checks (NaN or negative values only)
+    if remainingSeconds ~= remainingSeconds or remainingSeconds < 0 then
         textTimeTillDeath:SetText("-.--");
     else
         textTimeTillDeath:SetText(string.format("%.0fs", remainingSeconds));
@@ -739,55 +757,10 @@ TimeToKill.TTD:SetScript("OnShow", function(self)
 end);
 
 TimeToKill.TTD:SetScript("OnEvent", function()
-    if event == "PLAYER_LOGIN" then
-        if not TimeToKill.Settings then TimeToKill.Settings = {} end
-        if TimeToKill.Settings.isLocked == nil then TimeToKill.Settings.isLocked = false; end
-        if TimeToKill.Settings.isNameVisible == nil then TimeToKill.Settings.isNameVisible = true; end
-        if TimeToKill.Settings.combatHide == nil then TimeToKill.Settings.combatHide = false; end
-        if TimeToKill.Settings.minSampleTime == nil then TimeToKill.Settings.minSampleTime = 2.0; end
-        if TimeToKill.Settings.conservativeFactor == nil then TimeToKill.Settings.conservativeFactor = 0.95; end
-        if TimeToKill.Settings.showExecute == nil then TimeToKill.Settings.showExecute = true; end
-        if TimeToKill.Settings.showDPS == nil then TimeToKill.Settings.showDPS = true; end
-        if TimeToKill.Settings.showHP == nil then TimeToKill.Settings.showHP = true; end
-
-        DetectSuperWoWCapabilities();
-
-        ApplyFramePosition();
-        ApplyLockState();
-        UpdateNameVisibility();
-        ApplyCombatHideState();
-        if not inCombat then
-            TTD_Hide();
-        end
-    elseif event == "ADDON_LOADED" then
+    if event == "ADDON_LOADED" then
         if arg1 == "TimeToKill" then
-            if TimeToKill.Settings == nil then
-                TimeToKill.Settings = {};
-            end
-            if TimeToKill.Settings.isLocked == nil then
-                TimeToKill.Settings.isLocked = false;
-            end
-            if TimeToKill.Settings.isNameVisible == nil then
-                TimeToKill.Settings.isNameVisible = true;
-            end
-            if TimeToKill.Settings.combatHide == nil then
-                TimeToKill.Settings.combatHide = false;
-            end
-            if TimeToKill.Settings.minSampleTime == nil then
-                TimeToKill.Settings.minSampleTime = 2.0;
-            end
-            if TimeToKill.Settings.conservativeFactor == nil then
-                TimeToKill.Settings.conservativeFactor = 0.95;
-            end
-            if TimeToKill.Settings.showExecute == nil then
-                TimeToKill.Settings.showExecute = true;
-            end
-            if TimeToKill.Settings.showDPS == nil then
-                TimeToKill.Settings.showDPS = true;
-            end
-            if TimeToKill.Settings.showHP == nil then
-                TimeToKill.Settings.showHP = true;
-            end
+            -- Initialize settings after SavedVariables are loaded
+            InitializeSettings();
 
             DetectSuperWoWCapabilities();
 
@@ -795,6 +768,15 @@ TimeToKill.TTD:SetScript("OnEvent", function()
             ApplyLockState();
             UpdateNameVisibility();
             ApplyCombatHideState();
+        end
+    elseif event == "PLAYER_LOGIN" then
+        -- Apply settings on login (settings already initialized in ADDON_LOADED)
+        ApplyFramePosition();
+        ApplyLockState();
+        UpdateNameVisibility();
+        ApplyCombatHideState();
+        if not inCombat then
+            TTD_Hide();
         end
     elseif event == "PLAYER_REGEN_DISABLED" then
         inCombat = true;
@@ -855,6 +837,9 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         print("|cFF33FF99/ttk test|r - Toggle test mode (track any enemy).");
         print("|cFF33FF99/ttk debug|r - Show debug info.");
         print("|cFF33FF99/ttk status|r - Show addon status.");
+        print("|cFF33FF99/ttk help|r - Troubleshooting guide.");
+        print(" ");
+        print("|cFFFF8800Settings not persisting?|r Type |cFFFFFFFF/ttk help|r");
         return;
     end
 
@@ -1029,6 +1014,22 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         else
             print("TimeToKill: No target data available.");
         end
+    elseif command == "help" then
+        print("=== TimeToKill Help ===");
+        print(" ");
+        print("|cFF33FF99Settings not persisting after /reload?|r");
+        print("You have corrupted SavedVariables from an old version.");
+        print(" ");
+        print("|cFFFFFFFFFix:|r");
+        print("1. Exit WoW completely");
+        print("2. Delete the file:");
+        print("   |cFFAAAAFFWTF/Account/YOURNAME/SavedVariables/TimeToKill.lua|r");
+        print("3. Launch WoW - should see 'First run' message");
+        print("4. Configure settings, move frame, etc.");
+        print("5. /reload to test - settings should persist!");
+        print(" ");
+        print("|cFF33FF99Note:|r Once fixed, /reload will save settings.");
+        print("The issue is only from old corrupted SavedVariables.");
     else
         print("TimeToKill: Unknown command. Type /ttk for help.");
     end

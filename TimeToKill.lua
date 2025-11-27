@@ -148,6 +148,9 @@ if not TimeToKill.Settings then
     TimeToKill.Settings.combatHide = false;
     TimeToKill.Settings.minSampleTime = 2.0;    -- Minimum seconds before showing prediction
     TimeToKill.Settings.conservativeFactor = 0.95;  -- Multiply final result (0.9-1.0)
+    TimeToKill.Settings.showExecute = true;     -- Show execute phase timer
+    TimeToKill.Settings.showDPS = true;         -- Show DPS display
+    TimeToKill.Settings.showHP = true;          -- Show HP display
 end
 
 local defaultPosition = {
@@ -611,8 +614,12 @@ local function TTDLogic()
         targetData.rlsTTE:reset();
     end
 
-    -- Display HP (always show)
-    textHP:SetText(string.format("%s / %s", FormatHP(currentHP), FormatHP(maxHP)));
+    -- Display HP
+    if TimeToKill.Settings.showHP then
+        textHP:SetText(string.format("%s / %s", FormatHP(currentHP), FormatHP(maxHP)));
+    else
+        textHP:SetText("");
+    end
 
     -- Throttle samples to SAMPLE_INTERVAL (1 second)
     if (currentTime - targetData.lastSampleTime) >= SAMPLE_INTERVAL then
@@ -667,16 +674,24 @@ local function TTDLogic()
     remainingSeconds = targetData.smoothTTK;
 
     -- Get TTE (Time to Execute) if above execute threshold
-    local tte = targetData.rlsTTE:getTTK();
-    if tte and tte > 0 and hpPercent > (EXECUTE_THRESHOLD * 100) then
-        targetData.smoothTTE = SmoothValue(targetData.smoothTTE, tte, DISPLAY_SMOOTHING);
-        textTTE:SetText(string.format("Execute: %.1fs", targetData.smoothTTE));
+    if TimeToKill.Settings.showExecute then
+        local tte = targetData.rlsTTE:getTTK();
+        if tte and tte > 0 and hpPercent > (EXECUTE_THRESHOLD * 100) then
+            targetData.smoothTTE = SmoothValue(targetData.smoothTTE, tte, DISPLAY_SMOOTHING);
+            textTTE:SetText(string.format("Execute: %.0fs", targetData.smoothTTE));
+        else
+            textTTE:SetText("");
+        end
     else
         textTTE:SetText("");
     end
 
     -- Display DPS
-    textDPS:SetText(string.format("%s dps", FormatDPS(dps)));
+    if TimeToKill.Settings.showDPS then
+        textDPS:SetText(string.format("%s dps", FormatDPS(dps)));
+    else
+        textDPS:SetText("");
+    end
 
     -- Color coding based on HP% and TTK
     local execThresholdPct = EXECUTE_THRESHOLD * 100;
@@ -684,8 +699,11 @@ local function TTDLogic()
         -- In execute range - RED
         textTimeTillDeath:SetTextColor(0.8, 0.25, 0.25);
     elseif remainingSeconds and remainingSeconds <= WARNING_THRESHOLD then
-        -- Warning threshold - YELLOW
+        -- Warning threshold (40s or less) - YELLOW
         textTimeTillDeath:SetTextColor(0.8, 0.8, 0.2);
+    elseif remainingSeconds and remainingSeconds <= 60 then
+        -- Caution threshold (60s or less) - GREEN
+        textTimeTillDeath:SetTextColor(0.2, 0.8, 0.2);
     else
         -- Normal - WHITE
         textTimeTillDeath:SetTextColor(1.0, 1.0, 1.0);
@@ -695,7 +713,7 @@ local function TTDLogic()
     if remainingSeconds ~= remainingSeconds or remainingSeconds < 0 or remainingSeconds > 3600 then
         textTimeTillDeath:SetText("-.--");
     else
-        textTimeTillDeath:SetText(string.format("%.2f", remainingSeconds));
+        textTimeTillDeath:SetText(string.format("%.0fs", remainingSeconds));
     end
 end
 
@@ -728,6 +746,9 @@ TimeToKill.TTD:SetScript("OnEvent", function()
         if TimeToKill.Settings.combatHide == nil then TimeToKill.Settings.combatHide = false; end
         if TimeToKill.Settings.minSampleTime == nil then TimeToKill.Settings.minSampleTime = 2.0; end
         if TimeToKill.Settings.conservativeFactor == nil then TimeToKill.Settings.conservativeFactor = 0.95; end
+        if TimeToKill.Settings.showExecute == nil then TimeToKill.Settings.showExecute = true; end
+        if TimeToKill.Settings.showDPS == nil then TimeToKill.Settings.showDPS = true; end
+        if TimeToKill.Settings.showHP == nil then TimeToKill.Settings.showHP = true; end
 
         DetectSuperWoWCapabilities();
 
@@ -757,6 +778,15 @@ TimeToKill.TTD:SetScript("OnEvent", function()
             end
             if TimeToKill.Settings.conservativeFactor == nil then
                 TimeToKill.Settings.conservativeFactor = 0.95;
+            end
+            if TimeToKill.Settings.showExecute == nil then
+                TimeToKill.Settings.showExecute = true;
+            end
+            if TimeToKill.Settings.showDPS == nil then
+                TimeToKill.Settings.showDPS = true;
+            end
+            if TimeToKill.Settings.showHP == nil then
+                TimeToKill.Settings.showHP = true;
             end
 
             DetectSuperWoWCapabilities();
@@ -813,6 +843,12 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         print("|cFF33FF99/ttk name off|r - Hide 'Time Till Death:' text.");
         print("|cFF33FF99/ttk combathide on|r - Hide frame when out of combat.");
         print("|cFF33FF99/ttk combathide off|r - Keep frame visible.");
+        print("|cFF33FF99/ttk execute on|r - Show execute phase timer.");
+        print("|cFF33FF99/ttk execute off|r - Hide execute phase timer.");
+        print("|cFF33FF99/ttk dps on|r - Show DPS display.");
+        print("|cFF33FF99/ttk dps off|r - Hide DPS display.");
+        print("|cFF33FF99/ttk hp on|r - Show HP display.");
+        print("|cFF33FF99/ttk hp off|r - Hide HP display.");
         print("|cFF33FF99/ttk conservative <0.9-1.0>|r - Conservative factor (default 0.95).");
         print("|cFF33FF99/ttk minsample <seconds>|r - Min sample time (default 2.0).");
         print("|cFF33FF99/ttk smooth <0.1-0.3>|r - Display smoothing (default 0.15).");
@@ -857,6 +893,39 @@ SlashCmdList["TIMETOKILL"] = function(msg)
             print("TimeToKill: Combat hide disabled.");
         else
             print("TimeToKill: Usage: /ttk combathide [on|off]");
+        end
+    elseif command == "execute" then
+        if option == "on" then
+            TimeToKill.Settings.showExecute = true;
+            print("TimeToKill: Execute phase timer enabled.");
+        elseif option == "off" then
+            TimeToKill.Settings.showExecute = false;
+            textTTE:SetText("");
+            print("TimeToKill: Execute phase timer disabled.");
+        else
+            print("TimeToKill: Usage: /ttk execute [on|off]");
+        end
+    elseif command == "dps" then
+        if option == "on" then
+            TimeToKill.Settings.showDPS = true;
+            print("TimeToKill: DPS display enabled.");
+        elseif option == "off" then
+            TimeToKill.Settings.showDPS = false;
+            textDPS:SetText("");
+            print("TimeToKill: DPS display disabled.");
+        else
+            print("TimeToKill: Usage: /ttk dps [on|off]");
+        end
+    elseif command == "hp" then
+        if option == "on" then
+            TimeToKill.Settings.showHP = true;
+            print("TimeToKill: HP display enabled.");
+        elseif option == "off" then
+            TimeToKill.Settings.showHP = false;
+            textHP:SetText("");
+            print("TimeToKill: HP display disabled.");
+        else
+            print("TimeToKill: Usage: /ttk hp [on|off]");
         end
     elseif command == "conservative" then
         if option then

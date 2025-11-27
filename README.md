@@ -13,6 +13,7 @@ FEATURES:
 - Color-coded warnings:
   * RED - Target in execute range (≤20% HP)
   * YELLOW - Warning threshold (TTK ≤40 seconds)
+  * GREEN - Caution threshold (TTK ≤60 seconds)
   * WHITE - Normal state
 - Sample throttling (1 second interval) for better accuracy
 - Display smoothing to reduce jumpiness
@@ -32,6 +33,9 @@ COMMANDS:
 - `/ttk unlock` - Unlock frame (allows dragging with Shift)
 - `/ttk name on|off` - Show/hide label text
 - `/ttk combathide on|off` - Auto-hide frame when out of combat
+- `/ttk execute on|off` - Show/hide execute phase timer
+- `/ttk dps on|off` - Show/hide DPS display
+- `/ttk hp on|off` - Show/hide HP display
 
 **Calculation Settings:**
 - `/ttk conservative <0.9-1.0>` - Set conservative factor (default: 0.95)

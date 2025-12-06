@@ -762,6 +762,40 @@ TimeToKill.TTD:SetScript("OnEvent", function()
             -- Initialize settings after SavedVariables are loaded
             InitializeSettings();
 
+            -- Add API functions (must be done here because SavedVariables overwrites the table)
+            TimeToKill.GetTTK = function()
+                if not currentTargetGUID then return nil end
+                local data = targetTracking[currentTargetGUID]
+                if not data then return nil end
+                return data.smoothTTK or data.rlsTTK:getTTK()
+            end
+
+            TimeToKill.GetTTE = function()
+                if not currentTargetGUID then return nil end
+                local data = targetTracking[currentTargetGUID]
+                if not data then return nil end
+                local curHP = UnitHealth("target")
+                local maxHP = UnitHealthMax("target")
+                if curHP and maxHP and maxHP > 0 then
+                    local hpPct = (curHP / maxHP) * 100
+                    if hpPct <= (EXECUTE_THRESHOLD * 100) then
+                        return 0
+                    end
+                end
+                return data.smoothTTE or data.rlsTTE:getTTK()
+            end
+
+            TimeToKill.IsTracking = function()
+                return currentTargetGUID ~= nil and targetTracking[currentTargetGUID] ~= nil
+            end
+
+            TimeToKill.GetDPS = function()
+                if not currentTargetGUID then return nil end
+                local data = targetTracking[currentTargetGUID]
+                if not data then return nil end
+                return data.rlsTTK:getDPS()
+            end
+
             DetectSuperWoWCapabilities();
 
             ApplyFramePosition();
@@ -774,10 +808,14 @@ TimeToKill.TTD:SetScript("OnEvent", function()
         ApplyFramePosition();
         ApplyLockState();
         UpdateNameVisibility();
-        ApplyCombatHideState();
-        if not inCombat then
+        -- Check if already in combat (e.g., reloaded during combat)
+        if UnitAffectingCombat("player") then
+            inCombat = true;
+            TTD_Show();
+        else
             TTD_Hide();
         end
+        ApplyCombatHideState();
     elseif event == "PLAYER_REGEN_DISABLED" then
         inCombat = true;
         ApplyCombatHideState();
@@ -1030,6 +1068,16 @@ SlashCmdList["TIMETOKILL"] = function(msg)
         print(" ");
         print("|cFF33FF99Note:|r Once fixed, /reload will save settings.");
         print("The issue is only from old corrupted SavedVariables.");
+    elseif command == "api" then
+        -- Debug: test the API
+        local ttk = TimeToKill.GetTTK();
+        local tte = TimeToKill.GetTTE();
+        local tracking = TimeToKill.IsTracking();
+        print("TimeToKill API Test:");
+        print("  IsTracking: " .. tostring(tracking));
+        print("  GetTTK: " .. tostring(ttk));
+        print("  GetTTE: " .. tostring(tte));
+        print("  currentTargetGUID: " .. tostring(currentTargetGUID));
     else
         print("TimeToKill: Unknown command. Type /ttk for help.");
     end
